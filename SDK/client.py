@@ -41,42 +41,45 @@ class PBBClient:
         return self._cache[name]
 
     def write(self, address, data):
-        """指定したアドレスへ書き込む。自身のユニット以外への書き込みも論理的には可能。"""
-        base_name, flag_name = self._parse_address(address)
-        encoded_data = str(data).encode('utf-8')
-        
-        shm_data = self._get_shm(base_name)
-        shm_flag = self._get_shm(flag_name)
-        
-        if len(encoded_data) > shm_data.size:
-            raise PBBSizeError(f"Data exceeds size of '{address}'.")
-
+        """書き込みに成功すれば True、失敗すれば False を返す。"""
         try:
+            base_name, flag_name = self._parse_address(address)
+            encoded_data = str(data).encode('utf-8')
+            
+            shm_data = self._get_shm(base_name)
+            shm_flag = self._get_shm(flag_name)
+            
+            if len(encoded_data) > shm_data.size:
+                # サイズ超過は設計ミスなので例外を継続
+                raise PBBSizeError(f"Data exceeds size of '{address}'.")
+
             shm_flag.buf[0] = 1 # BUSY
             shm_data.buf[:len(encoded_data)] = encoded_data
             if len(encoded_data) < shm_data.size:
                 shm_data.buf[len(encoded_data):] = b'\x00' * (shm_data.size - len(encoded_data))
             shm_flag.buf[0] = 2 # READY
-        except Exception as e:
-            shm_flag.buf[0] = 0
-            raise PBBError(f"Write error: {e}")
+            return True
+        except (PBBConnectionError, FileNotFoundError):
+            # 接続失敗時は False を返し、呼び出し側に委ねる
+            return False
+        except Exception:
+            return False
 
     def read(self, address):
-        """指定したアドレスからデータを読み取る。"""
-        base_name, flag_name = self._parse_address(address)
-        shm_data = self._get_shm(base_name)
-        shm_flag = self._get_shm(flag_name)
-        
-        # READYになるまで極短時間待機
-        for _ in range(10):
-            if shm_flag.buf[0] == 2:
-                break
-            time.sleep(0.01)
+        """成功時は文字列を、失敗時（未接続や準備中）は None を返す。"""
+        try:
+            base_name, flag_name = self._parse_address(address)
+            shm_data = self._get_shm(base_name)
+            shm_flag = self._get_shm(flag_name)
             
-        if shm_flag.buf[0] == 2:
-            return bytes(shm_data.buf).rstrip(b'\x00').decode('utf-8', errors='replace')
+            if shm_flag.buf[0] == 2:
+                return bytes(shm_data.buf).rstrip(b'\x00').decode('utf-8', errors='replace')
+        except (PBBConnectionError, FileNotFoundError):
+            pass
         return None
+    
 
+    
     def check_flag(self, address):
         """指定したアドレスの現在のフラグ状態を文字列で返す。"""
         _, flag_name = self._parse_address(address)
