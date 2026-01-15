@@ -17,27 +17,28 @@ class PBBRegistry:
         self.decl_pattern = re.compile(r'#\s*PBB_DECLARE:\s*topic=([^,\s]+),\s*init=(.+)')
 
     def find_src_path(self):
-            # registry.py自身の絶対パスを取得
-            current_script_path = Path(__file__).resolve()
-            
-            # サブモジュールとして project_root/PBB/registry.py にある場合、
-            # parent.parent で project_root に到達する
-            # 構造に応じて parent の数を調整、あるいは src が見つかるまで遡るロジックにする
-            project_root = current_script_path.parent.parent
-            
-            src_path = project_root / self.src_dirname
-            
-            if not src_path.exists():
-                # フォールバックとしてカレントディレクトリからの探索も試みる
-                src_path = Path(os.getcwd()) / self.src_dirname
+        # スクリプト自身の絶対パスを起点にする
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # ルートディレクトリ（/ や C:\）に到達するまで遡る
+        while True:
+            # 現在の階層に src ディレクトリがあるか確認
+            target_path = os.path.join(current_dir, self.src_dirname)
+            if os.path.isdir(target_path):
+                return target_path
                 
-            if not src_path.exists():
-                print(f"Error: Could not find {self.src_dirname} directory.")
-                print(f"Searched near script: {project_root / self.src_dirname}")
-                print(f"Searched CWD: {Path(os.getcwd()) / self.src_dirname}")
-                sys.exit(1)
+            # 親ディレクトリを取得
+            parent_dir = os.path.dirname(current_dir)
+            
+            # これ以上遡れない（ルートに到達した）場合はループを抜ける
+            if parent_dir == current_dir:
+                break
                 
-            return src_path
+            current_dir = parent_dir
+        
+        # 最後まで見つからなかった場合のエラー処理
+        print(f"Error: {self.src_dirname} directory not found starting from {__file__}")
+        sys.exit(1)
 
     def scan_and_register(self):
         src_path = self.find_src_path()
