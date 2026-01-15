@@ -17,29 +17,20 @@ class PBBRegistry:
         self.decl_pattern = re.compile(r'#\s*PBB_DECLARE:\s*topic=([^,\s]+),\s*init=(.+)')
 
     def find_src_path(self):
-        # スクリプト自身の絶対パスを起点にする
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # ルートディレクトリ（/ や C:\）に到達するまで遡る
-        while True:
-            # 現在の階層に src ディレクトリがあるか確認
-            target_path = os.path.join(current_dir, self.src_dirname)
-            if os.path.isdir(target_path):
-                return target_path
-                
-            # 親ディレクトリを取得
-            parent_dir = os.path.dirname(current_dir)
+            # 自身のファイル位置を起点とした Path オブジェクトを作成
+            current_script = Path(__file__).resolve()
             
-            # これ以上遡れない（ルートに到達した）場合はループを抜ける
-            if parent_dir == current_dir:
-                break
-                
-            current_dir = parent_dir
-        
-        # 最後まで見つからなかった場合のエラー処理
-        print(f"Error: {self.src_dirname} directory not found starting from {__file__}")
-        sys.exit(1)
-
+            # 自身の親、そのまた親...とルートに向かって順に探索する
+            for parent in current_script.parents:
+                target = parent / self.src_dirname
+                if target.is_dir():
+                    # 見つかった場合は Path オブジェクトとして返す
+                    return target
+            
+            # どこにも見つからなかった場合はエラー終了
+            print(f"Error: {self.src_dirname} directory not found in any parent of {current_script}")
+            sys.exit(1)
+    
     def scan_and_register(self):
         src_path = self.find_src_path()
         print(f"PBB Registry scanning: {src_path}")
