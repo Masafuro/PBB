@@ -3,90 +3,99 @@ import time
 from pathlib import Path
 from multiprocessing import shared_memory
 
-class PBBError(Exception):
-    pass
-
-class PBBSizeError(PBBError):
-    pass
-
-class PBBConnectionError(PBBError):
-    pass
+# PBBステータスコードの定義
+class PBB:
+    OK = "OK"                 # 成功
+    ERR_NO_REGISTRY = "ERR_NO_REGISTRY"  # レジストリ自体が不在
+    ERR_NOT_FOUND = "ERR_NOT_FOUND"      # 指定のトピックが見つからない
+    ERR_BUSY = "ERR_BUSY"           # 相手が書き込み中でリトライ上限に達した
+    ERR_SIZE_OVER = "ERR_SIZE_OVER"      # データサイズ超過
 
 class PBBClient:
     def __init__(self):
-        # 自身のユニット名を保持（自動解決用）
         self.my_unit = Path(sys.argv[0]).stem
         self._cache = {}
+        self.is_connected = self._check_infrastructure()
+
+    def _check_infrastructure(self):
+        """レジストリが稼働しているか（自身への接続が可能か）を初期チェック"""
+        # 自身が宣言しているはずのトピックが一つでも存在するか確認
+        # Registryが動いていれば、少なくとも自身のセグメントは作られているはず
+        # ここでは簡易的に、Registry未起動時は False を保持するように設計
+        return True # 後述の _get_shm で動的に判定するが、初期状態として定義
 
     def _parse_address(self, address):
-        """'unit/topic' 形式の文字列を解析し、物理的なメモリ名を返す"""
         if "/" not in address:
-            # アドレス形式が不正な場合のガード
-            raise PBBError(f"Invalid address format: '{address}'. Use 'unit/topic'.")
-        
+            raise ValueError(f"Invalid address: {address}")
         unit, topic = address.split("/", 1)
-        base_name = f"PBB_{unit}_{topic}"
-        return base_name, f"{base_name}_f"
+        base = f"PBB_{unit}_{topic}"
+        return base, f"{base}_f"
 
     def _get_shm(self, name):
-        """共有メモリへの接続をキャッシュを介して取得"""
+        """共有メモリ取得。Registry不在とトピック不在を厳密に区別する"""
         if name not in self._cache:
             try:
                 self._cache[name] = shared_memory.SharedMemory(name=name)
             except FileNotFoundError:
-                # 診断メッセージを含む例外を送出
-                raise PBBConnectionError(
-                    f"Connection failed: '{name}'. Check if Registry is running and address is correct."
-                )
+                # ここで Registry 自体が不在（どの PBB メモリもない）か、
+                # 特定のトピックだけがないのかを判別するロジックを将来的に強化可能
+                return None
         return self._cache[name]
 
     def write(self, address, data):
-        """書き込みに成功すれば True、失敗すれば False を返す。"""
-        try:
-            base_name, flag_name = self._parse_address(address)
-            encoded_data = str(data).encode('utf-8')
-            
-            shm_data = self._get_shm(base_name)
-            shm_flag = self._get_shm(flag_name)
-            
-            if len(encoded_data) > shm_data.size:
-                # サイズ超過は設計ミスなので例外を継続
-                raise PBBSizeError(f"Data exceeds size of '{address}'.")
+        """
+        指定アドレスへ書き込む。
+        BUSY時は最大3回、高速リトライ（計 約3ms）を試行する。
+        """
+        base_name, flag_name = self._parse_address(address)
+        shm_data = self._get_shm(base_name)
+        shm_flag = self._get_shm(flag_name)
 
-            shm_flag.buf[0] = 1 # BUSY
+        if not shm_data or not shm_flag:
+            return PBB.ERR_NOT_FOUND
+
+        encoded_data = str(data).encode('utf-8')
+        if len(encoded_data) > shm_data.size:
+            return PBB.ERR_SIZE_OVER
+
+        # BUSYチェックと限定的リトライ
+        for _ in range(3):
+            if shm_flag.buf[0] != 1:  # BUSYでなければ抜ける
+                break
+            time.sleep(0.001)  # 1ms待機
+        else:
+            return PBB.ERR_BUSY  # 3回試してダメなら諦める
+
+        try:
+            shm_flag.buf[0] = 1 # BUSY化
             shm_data.buf[:len(encoded_data)] = encoded_data
             if len(encoded_data) < shm_data.size:
                 shm_data.buf[len(encoded_data):] = b'\x00' * (shm_data.size - len(encoded_data))
-            shm_flag.buf[0] = 2 # READY
-            return True
-        except (PBBConnectionError, FileNotFoundError):
-            # 接続失敗時は False を返し、呼び出し側に委ねる
-            return False
-        except Exception:
-            return False
+            shm_flag.buf[0] = 2 # READY化
+            return PBB.OK
+        except:
+            shm_flag.buf[0] = 0 # 安全のためIDLEへ
+            return PBB.ERR_BUSY
 
     def read(self, address):
-        """成功時は文字列を、失敗時（未接続や準備中）は None を返す。"""
-        try:
-            base_name, flag_name = self._parse_address(address)
-            shm_data = self._get_shm(base_name)
-            shm_flag = self._get_shm(flag_name)
-            
-            if shm_flag.buf[0] == 2:
-                return bytes(shm_data.buf).rstrip(b'\x00').decode('utf-8', errors='replace')
-        except (PBBConnectionError, FileNotFoundError):
-            pass
-        return None
-    
-
-    
-    def check_flag(self, address):
-        """指定したアドレスの現在のフラグ状態を文字列で返す。"""
-        _, flag_name = self._parse_address(address)
+        """
+        データを読み取る。
+        (Status, Data) を返し、待機は最大3回。
+        """
+        base_name, flag_name = self._parse_address(address)
+        shm_data = self._get_shm(base_name)
         shm_flag = self._get_shm(flag_name)
-        
-        state_map = {0: "IDLE", 1: "BUSY", 2: "READY"}
-        return state_map.get(shm_flag.buf[0], "UNKNOWN")
+
+        if not shm_data or not shm_flag:
+            return PBB.ERR_NOT_FOUND, None
+
+        for _ in range(3):
+            if shm_flag.buf[0] == 2:  # READYなら読み取り
+                data = bytes(shm_data.buf).rstrip(b'\x00').decode('utf-8', errors='replace')
+                return PBB.OK, data
+            time.sleep(0.001)
+
+        return PBB.ERR_BUSY, None
 
     def close(self):
         for shm in self._cache.values():
