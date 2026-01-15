@@ -23,13 +23,25 @@ class PBBClient:
         self._cache = {}
         
     def _get_shm(self, name):
-        """共有メモリへの接続を取得し、キャッシュする"""
-        if name not in self._cache:
-            try:
-                self._cache[name] = shared_memory.SharedMemory(name=name)
-            except FileNotFoundError:
-                raise PBBConnectionError(f"Shared memory '{name}' not found. Is PBBRegistry running?")
-        return self._cache[name]
+            """共有メモリへの接続を取得し、キャッシュする。失敗時は詳細なヒントを表示。"""
+            if name not in self._cache:
+                try:
+                    self._cache[name] = shared_memory.SharedMemory(name=name)
+                except FileNotFoundError:
+                    # 開発者が原因を特定しやすいように、考えられる理由を明示する
+                    error_msg = (
+                        f"\n"
+                        f"--- PBB Connection Diagnostic ---\n"
+                        f"FAILED TO CONNECT: '{name}'\n\n"
+                        f"Please check the following:\n"
+                        f"1. Is PBBRegistry currently running and active?\n"
+                        f"2. Is the unit name (filename) or topic name correct?\n"
+                        f"3. Was the '# PBB_DECLARE:' line present when Registry scanned 'src/'?\n"
+                        f"4. Does the memory name match what you see in monitor.py?\n"
+                        f"---------------------------------"
+                    )
+                    raise PBBConnectionError(error_msg)
+            return self._cache[name]
 
     def write(self, topic, data):
         """自身の黒板へデータを書き込む。サイズ超過時はエラー。"""
