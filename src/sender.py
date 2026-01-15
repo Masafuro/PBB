@@ -6,7 +6,7 @@ from pathlib import Path
 # PBBClientが配置されているパスをインポート（環境に応じて調整）
 # ここではPBBClientがプロジェクトルートにあると仮定
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from PBB.client import PBBClient, PBBSizeError, PBBConnectionError
+from SDK.client import PBBClient, PBBSizeError, PBBConnectionError
 
 def run_sender():
     try:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 # PBBClientが配置されているパスを動的に追加
 sys.path.append(str(Path(__file__).resolve().parent.parent))
-from PBB.client import PBBClient, PBBConnectionError
+from SDK.client import PBBClient, PBBConnectionError
 
 def run_receiver():
     try:
